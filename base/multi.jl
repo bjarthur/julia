@@ -1345,68 +1345,7 @@ pmap(f) = f()
 # L = {rsym(200),rsym(1000),rsym(200),rsym(1000),rsym(200),rsym(1000),rsym(200),rsym(1000)};
 # pmap(eig, L);
 function pmap(f, lsts...; err_retry=true, err_stop=false)
-    len = length(lsts)
-
-    results = Dict{Int,Any}()
-
-    retryqueue = {}
-    task_in_err = false
-    is_task_in_error() = task_in_err
-    set_task_in_error() = (task_in_err = true)
-
-    nextidx = 0
-    getnextidx() = (nextidx += 1)
-
-    states = [start(lsts[idx]) for idx in 1:len]
-    function getnext_tasklet()
-        if is_task_in_error() && err_stop
-            return nothing
-        elseif all([!done(lsts[idx],states[idx]) for idx in 1:len])
-            nxts = [next(lsts[idx],states[idx]) for idx in 1:len]
-            map(idx->states[idx]=nxts[idx][2], 1:len)
-            nxtvals = [x[1] for x in nxts]
-            return (getnextidx(), nxtvals)
-            
-        elseif !isempty(retryqueue)
-            return shift!(retryqueue)
-        else    
-            return nothing
-        end
-    end
-
-    @sync begin
-        for wpid in workers()
-            @async begin
-                tasklet = getnext_tasklet()
-                while (tasklet != nothing)
-                    (idx, fvals) = tasklet
-                    try
-                        result = remotecall_fetch(wpid, f, fvals...)
-                        if isa(result, Exception) 
-                            ((wpid == myid()) ? rethrow(result) : throw(result)) 
-                        else 
-                            results[idx] = result
-                        end
-                    catch ex
-                        if err_retry 
-                            push!(retryqueue, (idx,fvals, ex))
-                        else
-                            results[idx] = ex
-                        end
-                        set_task_in_error()
-                        break # remove this worker from accepting any more tasks 
-                    end
-                    
-                    tasklet = getnext_tasklet()
-                end
-            end
-        end
-    end
-
-    for failure in retryqueue
-        results[failure[1]] = failure[3]
-    end
-    [results[x] for x in 1:nextidx]
+    [x for x in ipmap(f, lsts...; err_retry=err_retry, err_stop=err_stop)]
 end
 
 type ipmap
@@ -1426,6 +1365,7 @@ function next(x::ipmap, state::Int)
     end
     fetch(x.results[state]), state+1
 end
+length(x::ipmap) = x.n
 
 function ipmap(f::Function, lsts...; err_retry=true, err_stop=false)
     len = length(lsts)
